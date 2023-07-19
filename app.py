@@ -75,8 +75,8 @@ try:
                     "1回のチャットで繰り返し使用された絵文字の数もカウントする。", value=False
                 )
                 semilogy = st.checkbox("Y軸を対数スケールで表示する。", value=False)
-                refetch = st.checkbox("動画とライブチャットの情報をキャッシュから読み込まずに再取得する。", value=False)
                 need_title = st.checkbox("グラフの画像に動画のタイトルを追加する。", value=False)
+                refetch = st.checkbox("動画とライブチャットの情報をキャッシュから読み込まずに再取得する。", value=False)
 
             submitted = st.form_submit_button(
                 "分析実行",
