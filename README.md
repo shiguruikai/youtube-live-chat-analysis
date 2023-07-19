@@ -6,8 +6,10 @@ YouTubeのライブチャットを分析するためのコマンドラインツ�
 - 指定したYouTubeのライブチャットを分析し、チャットの数、チャットの速さ、絵文字の使用回数のグラフを作成する。
 - チャットに勢いがある時のタイムスタンプとリンクを表示する。
 
-<img src="https://github.com/shiguruikai/screenshots/raw/main/ylca_webui_002.png" width="400">
-<img src="https://github.com/shiguruikai/screenshots/raw/main/ylca_webui_003.png" width="400">
+<p>
+    <img src="https://github.com/shiguruikai/screenshots/raw/main/ylca_webui_002.png" width="400">
+    <img src="https://github.com/shiguruikai/screenshots/raw/main/ylca_webui_003.png" width="400">
+</p>
 
 ## インストール
 
