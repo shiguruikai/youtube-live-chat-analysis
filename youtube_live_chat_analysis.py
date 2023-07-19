@@ -237,6 +237,9 @@ def plot_image(x, y, image: OffsetImage, ax: Axes | None = None):
 
 
 def find_live_chat_file_path(directory: str, video_id: str) -> str | None:
+    if not os.path.isdir(directory):
+        return None
+
     json_files = [
         f for f in os.listdir(directory) if f.endswith(f"[{video_id}].live_chat.json")
     ]
