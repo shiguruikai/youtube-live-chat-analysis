@@ -11,6 +11,11 @@ YouTubeのライブチャットを分析するためのコマンドラインツ�
     <img src="https://github.com/shiguruikai/screenshots/raw/main/ylca_webui_003.png" width="400">
 </p>
 
+## バージョン
+
+Python 3.10 で動作します。<br>
+それ以外のバージョンでも動作する可能性はありますが未検証です。
+
 ## インストール
 
 ### 1. GTKランタイムのインストール
