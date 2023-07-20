@@ -19,7 +19,9 @@ st.set_page_config(
     page_title=page_title,
     page_icon=":bar_chart:",
     layout="centered",
-    menu_items={"Get Help": "https://github.com/shiguruikai/youtube-live-chat-analysis"},
+    menu_items={
+        "Get Help": "https://github.com/shiguruikai/youtube-live-chat-analysis"
+    },
 )
 
 st.write(
@@ -91,7 +93,7 @@ try:
 
             start = time.perf_counter()
             with st.spinner("しばらくお待ちください。ライブチャットの情報の取得には数分かかる場合があります。"):
-                analize_result = ya.analize_live_chat(
+                analyze_result = ya.analyze_live_chat(
                     url_or_video_id=url,
                     out=os.path.join(os.path.dirname(__file__), "out"),
                     min_emoji_count=min_emoji_count,
@@ -104,12 +106,12 @@ try:
                     refetch=refetch,
                     need_title=need_title,
                 )
-            elapased = time.perf_counter() - start
-            st.success(f"分析が完了しました。 処理時間：{to_hms_str(elapased)}秒")
+            elapsed = time.perf_counter() - start
+            st.success(f"分析が完了しました。 処理時間：{to_hms_str(elapsed)}秒")
 
             st.divider()
 
-            st.markdown(f"#### {analize_result['video_title']}")
+            st.markdown(f"#### {analyze_result['video_title']}")
 
             st.pyplot(plt.gcf(), clear_figure=True)
 
@@ -120,11 +122,11 @@ try:
 """
             n = 0
             for s in (
-                int(ns / 1e9) for ns in analize_result["hot_timestamp"].astype(np.int64)
+                int(ns / 1e9) for ns in analyze_result["hot_timestamp"].astype(np.int64)
             ):
                 n += 1
                 hms = to_hms_str(s)
-                link = f"{analize_result['url']}&t={s}s"
+                link = f"{analyze_result['url']}&t={s}s"
                 md += f"|{n}|{hms}|{link}|\n"
             st.markdown(md)
 

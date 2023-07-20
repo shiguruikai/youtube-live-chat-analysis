@@ -43,7 +43,7 @@ class ChatItem(TypedDict):
     offset_time_msec: int
 
 
-class VidoInfo(TypedDict):
+class VideoInfo(TypedDict):
     url: str
     id: str
     title: str
@@ -140,7 +140,7 @@ def fetch_chat_items(
     url_or_video_id: str,
     refetch: bool = False,
     verbose: bool = False,
-) -> tuple[VidoInfo, list[ChatItem]]:
+) -> tuple[VideoInfo, list[ChatItem]]:
     if url_or_video_id.startswith("http"):
         video_id = get_youtube_id(url_or_video_id)
         if video_id is None:
@@ -177,7 +177,7 @@ def fetch_chat_items(
 
     chat_items = load_live_chat_file(chat_file_path)
 
-    info: VidoInfo = {
+    info: VideoInfo = {
         "url": url,
         "id": video_id,
         "title": title,
@@ -277,14 +277,14 @@ def setup_matplotlib(font_size: int):
     plt.rcParams["font.family"] = "sans-serif"
 
 
-class AnalizeResult(TypedDict):
+class AnalyzeResult(TypedDict):
     url: str
     video_id: str
     video_title: str
     hot_timestamp: DatetimeIndex
 
 
-def analize_live_chat(
+def analyze_live_chat(
     url_or_video_id: str,
     out: str | None = None,
     min_emoji_count: int = 1,
@@ -298,7 +298,7 @@ def analize_live_chat(
     refetch: bool = False,
     need_title: bool = False,
     verbose: bool = False,
-) -> AnalizeResult:
+) -> AnalyzeResult:
     setup_matplotlib(font_size=font_size)
 
     video_info, chat_items = fetch_chat_items(
@@ -565,7 +565,7 @@ def main():
     if args.remove_matplotlib_cache:
         shutil.rmtree(matplotlib.get_cachedir(), ignore_errors=True)
 
-    analize_live_chat(
+    analyze_live_chat(
         url_or_video_id=args.url,
         out=args.out,
         min_emoji_count=args.min_emoji_count,
