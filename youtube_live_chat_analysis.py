@@ -1,4 +1,5 @@
 import argparse
+import asyncio
 import collections
 import io
 import itertools
@@ -7,10 +8,10 @@ import math
 import os
 import re
 import shutil
-import urllib.request
-from functools import lru_cache, reduce
+from functools import reduce
 from typing import TypedDict
 
+import aiohttp
 import cairosvg
 import emoji
 import matplotlib
@@ -23,15 +24,6 @@ from matplotlib.axes import Axes
 from matplotlib.offsetbox import AnnotationBbox, OffsetImage
 from pandas import DataFrame, DatetimeIndex
 from PIL import Image
-
-grid_params = {
-    "which": "major",
-    "axis": "both",
-    "color": "gray",
-    "linestyle": "--",
-    "linewidth": 0.6,
-    "alpha": 0.6,
-}
 
 
 class ChatItem(TypedDict):
@@ -186,56 +178,6 @@ def fetch_chat_items(
     return info, chat_items
 
 
-@lru_cache(maxsize=256)
-def fetch_image(url: str):
-    try:
-        # svgファイルは、Pillowがサポートしていないため、pngに変換してから読み込む。
-        if url.endswith(".svg"):
-            return Image.open(
-                io.BytesIO(
-                    cairosvg.svg2png(
-                        url=url,
-                        output_width=64,
-                        output_height=64,
-                        write_to=None,
-                    )
-                )
-            )
-        else:
-            with urllib.request.urlopen(url) as response:
-                return Image.open(response)
-    except Exception as e:
-        print(f"画像の読み込みに失敗しました。 url: {url}")
-        print(e)
-        return None
-
-
-def fetch_to_offset_image(url: str, size: int | None = None):
-    im = fetch_image(url)
-    if im is None:
-        return None
-    if size is None:
-        zoom = 1
-    else:
-        zoom = size / im.width
-    return OffsetImage(im, zoom=zoom)
-
-
-def plot_image(x, y, image: OffsetImage, ax: Axes | None = None):
-    if ax is None:
-        ax = plt.gca()
-
-    ab = AnnotationBbox(
-        image,
-        (x, y),
-        xycoords="data",
-        # フレームを非表示
-        frameon=False,
-    )
-    ax.add_artist(ab)
-    ax.plot(x, y, alpha=0)
-
-
 def find_live_chat_file_path(directory: str, video_id: str) -> str | None:
     if not os.path.isdir(directory):
         return None
@@ -253,6 +195,62 @@ def get_youtube_id(url: str) -> str | None:
     if m is None:
         return None
     return m.group()
+
+
+class FetchedEmoji(TypedDict):
+    emoji_text: str
+    url: str
+    image: Image.Image
+
+
+async def async_fetch_emoji(
+    session: aiohttp.ClientSession, emoji_text: str, url: str, sem: asyncio.Semaphore
+) -> FetchedEmoji:
+    try:
+        async with sem:
+            async with session.get(url) as res:
+                content_bytes = await res.read()
+        # svgファイルは、Pillowがサポートしていないため、pngに変換してから読み込む。
+        if url.endswith(".svg"):
+            image = Image.open(
+                io.BytesIO(
+                    cairosvg.svg2png(
+                        content_bytes,
+                        output_width=64,
+                        output_height=64,
+                        write_to=None,
+                    )
+                )
+            )
+        else:
+            image = Image.open(io.BytesIO(content_bytes))
+        return {"emoji_text": emoji_text, "url": url, "image": image}
+    except Exception:
+        print(f"画像の読み込みに失敗しました。 url: {url}")
+        raise
+
+
+def new_resized_offset_image(image: Image.Image, size: int | None = None):
+    if size is None:
+        zoom = 1
+    else:
+        zoom = size / image.width
+    return OffsetImage(image, zoom=zoom)
+
+
+def plot_image(x, y, image: OffsetImage, ax: Axes | None = None):
+    if ax is None:
+        ax = plt.gca()
+
+    ab = AnnotationBbox(
+        image,
+        (x, y),
+        xycoords="data",
+        # フレームを非表示
+        frameon=False,
+    )
+    ax.add_artist(ab)
+    ax.plot(x, y, alpha=0)
 
 
 def set_semilogy(ax: Axes | None = None):
@@ -277,6 +275,16 @@ def setup_matplotlib(font_size: int):
     plt.rcParams["font.family"] = "sans-serif"
 
 
+_GRID_PARAMS = {
+    "which": "major",
+    "axis": "both",
+    "color": "gray",
+    "linestyle": "--",
+    "linewidth": 0.6,
+    "alpha": 0.6,
+}
+
+
 class AnalyzeResult(TypedDict):
     url: str
     video_id: str
@@ -284,7 +292,7 @@ class AnalyzeResult(TypedDict):
     hot_timestamp: DatetimeIndex
 
 
-def analyze_live_chat(
+async def analyze_live_chat(
     url_or_video_id: str,
     out: str | None = None,
     min_emoji_count: int = 1,
@@ -304,6 +312,21 @@ def analyze_live_chat(
     video_info, chat_items = fetch_chat_items(
         url_or_video_id, refetch=refetch, verbose=verbose
     )
+
+    emoji_text_to_url: dict[str, str] = reduce(
+        lambda acc, it: {**acc, **it},
+        (it["emoji_text_to_url"] for it in chat_items),
+        {},
+    )
+
+    session = aiohttp.ClientSession()
+    request_sem = asyncio.Semaphore(4)
+
+    # 全ての絵文字の画像を非同期で取得する。
+    fetched_emoji_futures = [
+        async_fetch_emoji(session, k, v, request_sem)
+        for k, v in emoji_text_to_url.items()
+    ]
 
     fig = plt.figure()
 
@@ -326,7 +349,7 @@ def analyze_live_chat(
     # (1) チャットの数
     ####################################################################################
     ax = fig.add_subplot(7, 1, (1, 2))
-    ax.grid(**grid_params)
+    ax.grid(**_GRID_PARAMS)
     ax.set_xlabel("経過時間")
     ax.set_ylabel("チャットの数")
     ax.set_title("チャットの数")
@@ -345,7 +368,7 @@ def analyze_live_chat(
     chat_speed_ma_window_size = max(1, int(timestamp_period_total_sec * 0.01))
 
     ax = fig.add_subplot(7, 1, (3, 4))
-    ax.grid(**grid_params)
+    ax.grid(**_GRID_PARAMS)
     ax.set_xlabel("経過時間")
     ax.set_ylabel("チャットの数／秒")
     ax.set_title(f"チャットの速さ\n移動平均間隔…{chat_speed_ma_window_size}秒    赤線…上位10%")
@@ -394,7 +417,7 @@ def analyze_live_chat(
     emoji_df_resample_sec = max(1, int(timestamp_period_total_sec * 0.035))
 
     ax = fig.add_subplot(7, 1, (5, 7))
-    ax.grid(**grid_params)
+    ax.grid(**_GRID_PARAMS)
     ax.xaxis.set_major_formatter(mdates.DateFormatter("%H:%M"))
     ax.set_xlabel("経過時間")
     ax.set_ylabel("絵文字の数")
@@ -420,11 +443,13 @@ def analyze_live_chat(
     emoji_df.set_index("timestamp", inplace=True)
     emoji_df = emoji_df.resample(f"{emoji_df_resample_sec}s").sum()
 
-    emoji_text_to_url: dict[str, str] = reduce(
-        lambda acc, it: {**acc, **it},
-        (it["emoji_text_to_url"] for it in chat_items),
-        {},
+    fetched_emoji_list: list[FetchedEmoji] = await asyncio.gather(
+        *fetched_emoji_futures
     )
+
+    await session.close()
+
+    emoji_text_to_image = {it["emoji_text"]: it["image"] for it in fetched_emoji_list}
 
     for index, row in emoji_df.iterrows():
         # 使用回数がしきい値以上の絵文字を使用回数の低い順にループ
@@ -435,13 +460,12 @@ def analyze_live_chat(
             if count < min_emoji_count:
                 continue
 
-            emoji_url = emoji_text_to_url.get(emoji_text)
-
-            image = fetch_to_offset_image(emoji_url, size=emoji_size)
-            if image is None:
+            im = emoji_text_to_image.get(emoji_text)
+            if im is None:
                 continue
 
-            plot_image(x=index, y=count, image=image, ax=ax)
+            oim = new_resized_offset_image(im, size=emoji_size)
+            plot_image(x=index, y=count, image=oim, ax=ax)
 
     # 軸の自動調整
     ax.autoscale()
@@ -449,7 +473,7 @@ def analyze_live_chat(
     if semilogy:
         set_semilogy(ax)
     else:
-        # 絵文字の画像がはみ出すため、Y軸を縦横に少し拡大しておく。
+        # 絵文字の画像がはみ出すため、Y軸を少し拡大しておく。
         _, y_top = ax.get_ylim()
         f = emoji_size * 0.003
         ax.set_ylim(bottom=y_top * -f, top=y_top * (1 + f))
@@ -480,7 +504,7 @@ def flatten(iterable):
     return list(itertools.chain.from_iterable(iterable))
 
 
-def main():
+async def main():
     parser = argparse.ArgumentParser(description="YouTube動画のライブコメントを分析してグラフの画像を生成するツール")
     parser.add_argument(
         "--url",
@@ -565,8 +589,8 @@ def main():
     if args.remove_matplotlib_cache:
         shutil.rmtree(matplotlib.get_cachedir(), ignore_errors=True)
 
-    analyze_live_chat(
-        url_or_video_id=args.url,
+    await analyze_live_chat(
+        url_or_video_id=args.url or args.id,
         out=args.out,
         min_emoji_count=args.min_emoji_count,
         max_emoji_plot=args.max_emoji_plot,
@@ -583,4 +607,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
