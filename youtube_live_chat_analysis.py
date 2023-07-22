@@ -45,10 +45,8 @@ def load_live_chat_file(file) -> list[ChatItem]:
     chat_items: list[ChatItem] = []
 
     with open(file, encoding="utf-8", mode="r") as f:
-        line_number = 0
         try:
-            for line in f:
-                line_number += 1
+            for line_number, line in enumerate(f, 1):
                 chat: dict = json.loads(line)
                 chat_item_action: dict = chat["replayChatItemAction"]
                 actions: list[dict] = chat_item_action["actions"]
@@ -71,8 +69,8 @@ def load_live_chat_file(file) -> list[ChatItem]:
 
                     text: str = ""
                     emoji_text_list = []
-                    author_name: str = ""
                     emoji_text_to_url: dict[str, str] = {}
+                    author_name: str = ""
 
                     messages: list[dict] = message_renderer["message"]["runs"]
                     for message in messages:
