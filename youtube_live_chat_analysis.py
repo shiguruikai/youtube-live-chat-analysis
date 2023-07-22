@@ -2,7 +2,6 @@ import argparse
 import asyncio
 import collections
 import io
-import itertools
 import json
 import math
 import os
@@ -202,12 +201,21 @@ class FetchedEmoji(TypedDict):
 
 
 async def async_fetch_emoji(
-    session: aiohttp.ClientSession, emoji_text: str, url: str, sem: asyncio.Semaphore
-) -> FetchedEmoji:
-    try:
-        async with sem:
+    session: aiohttp.ClientSession,
+    sem: asyncio.Semaphore,
+    emoji_text: str,
+    url: str,
+) -> FetchedEmoji | None:
+    async with sem:
+        try:
             async with session.get(url) as res:
                 content_bytes = await res.read()
+        except Exception as e:
+            print(f"[warn] 画像の取得に失敗しました。 url: {url}")
+            print(e)
+            return None
+
+    try:
         # svgファイルは、Pillowがサポートしていないため、pngに変換してから読み込む。
         if url.endswith(".svg"):
             image = Image.open(
@@ -215,25 +223,18 @@ async def async_fetch_emoji(
                     cairosvg.svg2png(
                         content_bytes,
                         output_width=64,
-                        output_height=64,
-                        write_to=None,
+                        output_height=None,
                     )
                 )
             )
         else:
             image = Image.open(io.BytesIO(content_bytes))
-        return {"emoji_text": emoji_text, "url": url, "image": image}
-    except Exception:
-        print(f"画像の読み込みに失敗しました。 url: {url}")
-        raise
+    except Exception as e:
+        print(f"[warn] 画像の読み込みに失敗しました。 emoji_text: {emoji_text} url: {url}")
+        print(e)
+        return None
 
-
-def new_resized_offset_image(image: Image.Image, size: int | None = None):
-    if size is None:
-        zoom = 1
-    else:
-        zoom = size / image.width
-    return OffsetImage(image, zoom=zoom)
+    return {"emoji_text": emoji_text, "url": url, "image": image}
 
 
 def plot_image(x, y, image: OffsetImage, ax: Axes | None = None):
@@ -282,6 +283,8 @@ _GRID_PARAMS = {
     "alpha": 0.6,
 }
 
+MAX_CONCURRENT_REQUESTS = 4
+
 
 class AnalyzeResult(TypedDict):
     url: str
@@ -317,189 +320,187 @@ async def analyze_live_chat(
         {},
     )
 
-    session = aiohttp.ClientSession()
-    request_sem = asyncio.Semaphore(4)
+    request_sem = asyncio.Semaphore(MAX_CONCURRENT_REQUESTS)
 
-    # 全ての絵文字の画像を非同期で取得する。
-    fetched_emoji_futures = [
-        async_fetch_emoji(session, k, v, request_sem)
-        for k, v in emoji_text_to_url.items()
-    ]
+    async with aiohttp.ClientSession() as session:
+        # 全ての絵文字の画像を非同期で取得する。
+        fetched_emoji_futures = [
+            async_fetch_emoji(session, request_sem, k, v)
+            for k, v in emoji_text_to_url.items()
+        ]
 
-    fig = plt.figure()
+        fig = plt.figure()
 
-    fig.set_size_inches(w=size[0] / fig.dpi, h=size[1] / fig.dpi)
+        fig.set_size_inches(w=size[0] / fig.dpi, h=size[1] / fig.dpi)
 
-    if need_title:
-        fig.suptitle(f"{video_info['title']} [{video_info['id']}]", wrap=True)
+        if need_title:
+            fig.suptitle(f"{video_info['title']} [{video_info['id']}]", wrap=True)
 
-    timestamp_df = DataFrame(chat_items, columns=["offset_time_msec"])
-    timestamp_df.rename(columns={"offset_time_msec": "timestamp"}, inplace=True)
-    timestamp_df = timestamp_df.apply(lambda it: pd.to_datetime(it, unit="ms"))
+        timestamp_df = DataFrame(chat_items, columns=["offset_time_msec"])
+        timestamp_df.rename(columns={"offset_time_msec": "timestamp"}, inplace=True)
+        timestamp_df = timestamp_df.apply(lambda it: pd.to_datetime(it, unit="ms"))
 
-    timestamp_period: pd.Timedelta = (
-        timestamp_df["timestamp"].iloc[-1] - timestamp_df["timestamp"].iloc[0]
-    )
-
-    timestamp_period_total_sec = timestamp_period.total_seconds()
-
-    ####################################################################################
-    # (1) チャットの数
-    ####################################################################################
-    ax = fig.add_subplot(7, 1, (1, 2))
-    ax.grid(**_GRID_PARAMS)
-    ax.set_xlabel("経過時間")
-    ax.set_ylabel("チャットの数")
-    ax.set_title("チャットの数")
-    ax.xaxis.set_major_formatter(mdates.DateFormatter("%H:%M"))
-
-    # ヒストグラムの棒の数は、とりあえず平方根にしておく。
-    ax.hist(timestamp_df["timestamp"], bins=int(math.sqrt(len(timestamp_df))))
-
-    if semilogy:
-        set_semilogy(ax)
-
-    ####################################################################################
-    # (2) チャットの速さ
-    ####################################################################################
-
-    chat_speed_ma_window_size = max(1, int(timestamp_period_total_sec * 0.01))
-
-    ax = fig.add_subplot(7, 1, (3, 4))
-    ax.grid(**_GRID_PARAMS)
-    ax.set_xlabel("経過時間")
-    ax.set_ylabel("チャットの数／秒")
-    ax.set_title(f"チャットの速さ\n移動平均間隔…{chat_speed_ma_window_size}秒    赤線…上位10%")
-
-    chat_speed_df = timestamp_df.copy()
-
-    # 1秒毎の数をカウントし、移動平均をプロットする。
-    chat_speed_df["count"] = 0
-    chat_speed_df.set_index("timestamp", inplace=True)
-    chat_speed_df = chat_speed_df.resample("1s").count()
-    chat_speed_df = chat_speed_df.rolling(chat_speed_ma_window_size).mean()
-    ax.plot(chat_speed_df)
-
-    # 上位10%のタイムスタンプを抽出
-    top_timestamp_df = chat_speed_df[chat_speed_df["count"].rank(pct=True) > 0.9]
-
-    # 上位10%の線を赤い太線で上書きする。
-    ax.plot(top_timestamp_df["count"].asfreq("1s"), color="red", linewidth=1.5)
-
-    ##################
-    # X軸の目盛り設定
-    ##################
-    # X軸の最小の目盛り間隔
-    xticks_interval_threshold = pd.Timedelta(
-        seconds=max(1, int(timestamp_period_total_sec * 0.025))
-    )
-    # 上位10%のうち1つ前のタイムスタンプとの差
-    time_diff = top_timestamp_df.index.to_series().diff()
-    # タイムスタンプの差が、しきい値以上またはNaT(1番目の差)を抽出
-    xticks_ser = time_diff[
-        (time_diff >= xticks_interval_threshold) | time_diff.isnull()
-    ]
-    # datetimeをFixedLocatorに使うには、数値に変換する必要がある。
-    x_major_locator = ticker.FixedLocator(mdates.date2num(xticks_ser.index))
-    ax.xaxis.set_major_locator(x_major_locator)
-    ax.xaxis.set_major_formatter(mdates.DateFormatter("%H:%M"))
-    ax.xaxis.set_tick_params(rotation=45)
-
-    if semilogy:
-        set_semilogy(ax)
-
-    ####################################################################################
-    # (3) 絵文字の数
-    ####################################################################################
-
-    emoji_df_resample_sec = max(1, int(timestamp_period_total_sec * 0.035))
-
-    ax = fig.add_subplot(7, 1, (5, 7))
-    ax.grid(**_GRID_PARAMS)
-    ax.xaxis.set_major_formatter(mdates.DateFormatter("%H:%M"))
-    ax.set_xlabel("経過時間")
-    ax.set_ylabel("絵文字の数")
-    ax.set_title(f"絵文字の数（{emoji_df_resample_sec}秒毎）")
-
-    emoji_df = timestamp_df.copy()
-
-    # 念のためデータサイズをチェック
-    assert len(emoji_df.index) == len(chat_items)
-
-    # 絵文字の使用回数列を追加
-    for i, emoji_text_list in zip(
-        emoji_df.index, (it["emoji_text_list"] for it in chat_items)
-    ):
-        if count_repeated_emoji:
-            for emoji_text, count in collections.Counter(emoji_text_list).items():
-                emoji_df.loc[i, emoji_text] = count
-        else:
-            for emoji_text in set(emoji_text_list):
-                emoji_df.loc[i, emoji_text] = 1
-
-    # 一定時間毎に集約
-    emoji_df.set_index("timestamp", inplace=True)
-    emoji_df = emoji_df.resample(f"{emoji_df_resample_sec}s").sum()
-
-    fetched_emoji_list: list[FetchedEmoji] = await asyncio.gather(
-        *fetched_emoji_futures
-    )
-
-    await session.close()
-
-    emoji_text_to_image = {it["emoji_text"]: it["image"] for it in fetched_emoji_list}
-
-    for index, row in emoji_df.iterrows():
-        # 使用回数がしきい値以上の絵文字を使用回数の低い順にループ
-        for emoji_text, count in (
-            row.sort_values(ascending=False)[:max_emoji_plot][::-1]
-        ).items():
-            # 使用回数が最小値に満たない絵文字はプロットしない。
-            if count < min_emoji_count:
-                continue
-
-            im = emoji_text_to_image.get(emoji_text)
-            if im is None:
-                continue
-
-            oim = new_resized_offset_image(im, size=emoji_size)
-            plot_image(x=index, y=count, image=oim, ax=ax)
-
-    # 軸の自動調整
-    ax.autoscale()
-
-    if semilogy:
-        set_semilogy(ax)
-    else:
-        # 絵文字の画像がはみ出すため、Y軸を少し拡大しておく。
-        _, y_top = ax.get_ylim()
-        f = emoji_size * 0.003
-        ax.set_ylim(bottom=y_top * -f, top=y_top * (1 + f))
-
-    # 余白部分の自動調整
-    fig.tight_layout()
-
-    if out:
-        out_dir_path = os.path.join(out)
-        os.makedirs(out_dir_path, exist_ok=True)
-        out_file_path = os.path.join(
-            out_dir_path, f"{video_info['title']} [{video_info['id']}].png"
+        timestamp_period: pd.Timedelta = (
+            timestamp_df["timestamp"].iloc[-1] - timestamp_df["timestamp"].iloc[0]
         )
-        plt.savefig(out_file_path)
 
-    if gui:
-        plt.show()
+        timestamp_period_total_sec = timestamp_period.total_seconds()
 
-    return {
-        "url": video_info["url"],
-        "video_id": video_info["id"],
-        "video_title": video_info["title"],
-        "hot_timestamp": xticks_ser.index,
-    }
+        ################################################################################
+        # (1) チャットの数
+        ################################################################################
+        ax = fig.add_subplot(7, 1, (1, 2))
+        ax.grid(**_GRID_PARAMS)
+        ax.set_xlabel("経過時間")
+        ax.set_ylabel("チャットの数")
+        ax.set_title("チャットの数")
+        ax.xaxis.set_major_formatter(mdates.DateFormatter("%H:%M"))
 
+        # ヒストグラムの棒の数は、とりあえず平方根にしておく。
+        ax.hist(timestamp_df["timestamp"], bins=int(math.sqrt(len(timestamp_df))))
 
-def flatten(iterable):
-    return list(itertools.chain.from_iterable(iterable))
+        if semilogy:
+            set_semilogy(ax)
+
+        ################################################################################
+        # (2) チャットの速さ
+        ################################################################################
+
+        chat_speed_ma_window_size = max(1, int(timestamp_period_total_sec * 0.01))
+
+        ax = fig.add_subplot(7, 1, (3, 4))
+        ax.grid(**_GRID_PARAMS)
+        ax.set_xlabel("経過時間")
+        ax.set_ylabel("チャットの数／秒")
+        ax.set_title(f"チャットの速さ\n移動平均間隔…{chat_speed_ma_window_size}秒    赤線…上位10%")
+
+        chat_speed_df = timestamp_df.copy()
+
+        # 1秒毎の数をカウントし、移動平均をプロットする。
+        chat_speed_df["count"] = 0
+        chat_speed_df.set_index("timestamp", inplace=True)
+        chat_speed_df = chat_speed_df.resample("1s").count()
+        chat_speed_df = chat_speed_df.rolling(chat_speed_ma_window_size).mean()
+        ax.plot(chat_speed_df)
+
+        # 上位10%のタイムスタンプを抽出
+        top_timestamp_df = chat_speed_df[chat_speed_df["count"].rank(pct=True) > 0.9]
+
+        # 上位10%の線を赤い太線で上書きする。
+        ax.plot(top_timestamp_df["count"].asfreq("1s"), color="red", linewidth=1.5)
+
+        ##################
+        # X軸の目盛り設定
+        ##################
+        # X軸の最小の目盛り間隔
+        xticks_interval_threshold = pd.Timedelta(
+            seconds=max(1, int(timestamp_period_total_sec * 0.025))
+        )
+        # 上位10%のうち1つ前のタイムスタンプとの差
+        time_diff = top_timestamp_df.index.to_series().diff()
+        # タイムスタンプの差が、しきい値以上またはNaT(1番目の差)を抽出
+        xticks_ser = time_diff[
+            (time_diff >= xticks_interval_threshold) | time_diff.isnull()
+        ]
+        # datetimeをFixedLocatorに使うには、数値に変換する必要がある。
+        x_major_locator = ticker.FixedLocator(mdates.date2num(xticks_ser.index))
+        ax.xaxis.set_major_locator(x_major_locator)
+        ax.xaxis.set_major_formatter(mdates.DateFormatter("%H:%M"))
+        ax.xaxis.set_tick_params(rotation=45)
+
+        if semilogy:
+            set_semilogy(ax)
+
+        ################################################################################
+        # (3) 絵文字の数
+        ################################################################################
+
+        emoji_df_resample_sec = max(1, int(timestamp_period_total_sec * 0.035))
+
+        ax = fig.add_subplot(7, 1, (5, 7))
+        ax.grid(**_GRID_PARAMS)
+        ax.xaxis.set_major_formatter(mdates.DateFormatter("%H:%M"))
+        ax.set_xlabel("経過時間")
+        ax.set_ylabel("絵文字の数")
+        ax.set_title(f"絵文字の数（{emoji_df_resample_sec}秒毎）")
+
+        emoji_df = timestamp_df.copy()
+
+        # 念のためデータサイズをチェック
+        assert len(emoji_df.index) == len(chat_items)
+
+        # 絵文字の使用回数列を追加
+        for i, emoji_text_list in zip(
+            emoji_df.index, (it["emoji_text_list"] for it in chat_items)
+        ):
+            if count_repeated_emoji:
+                for emoji_text, count in collections.Counter(emoji_text_list).items():
+                    emoji_df.loc[i, emoji_text] = count
+            else:
+                for emoji_text in set(emoji_text_list):
+                    emoji_df.loc[i, emoji_text] = 1
+
+        # 一定時間毎に集約
+        emoji_df.set_index("timestamp", inplace=True)
+        emoji_df = emoji_df.resample(f"{emoji_df_resample_sec}s").sum()
+
+        fetched_emoji_list: list[FetchedEmoji | None] = await asyncio.gather(
+            *fetched_emoji_futures
+        )
+
+        emoji_text_to_image = {
+            it["emoji_text"]: it["image"] for it in fetched_emoji_list if it is not None
+        }
+
+        for index, row in emoji_df.iterrows():
+            # 使用回数がしきい値以上の絵文字を使用回数の低い順にループ
+            for emoji_text, count in (
+                row.sort_values(ascending=False)[:max_emoji_plot][::-1]
+            ).items():
+                # 使用回数が最小値に満たない絵文字はプロットしない。
+                if count < min_emoji_count:
+                    continue
+
+                img = emoji_text_to_image.get(emoji_text)
+                if img is None:
+                    continue
+
+                zoom = emoji_size / img.width
+                offset_img = OffsetImage(img, zoom=zoom)
+
+                plot_image(x=index, y=count, image=offset_img, ax=ax)
+
+        # 軸の自動調整
+        ax.autoscale()
+
+        if semilogy:
+            set_semilogy(ax)
+        else:
+            # 絵文字の画像がはみ出すため、Y軸を少し拡大しておく。
+            _, y_top = ax.get_ylim()
+            f = emoji_size * 0.003
+            ax.set_ylim(bottom=y_top * -f, top=y_top * (1 + f))
+
+        # 余白部分の自動調整
+        fig.tight_layout()
+
+        if out:
+            out_dir_path = os.path.join(out)
+            os.makedirs(out_dir_path, exist_ok=True)
+            out_file_path = os.path.join(
+                out_dir_path, f"{video_info['title']} [{video_info['id']}].png"
+            )
+            plt.savefig(out_file_path)
+
+        if gui:
+            plt.show()
+
+        return {
+            "url": video_info["url"],
+            "video_id": video_info["id"],
+            "video_title": video_info["title"],
+            "hot_timestamp": xticks_ser.index,
+        }
 
 
 async def main():
