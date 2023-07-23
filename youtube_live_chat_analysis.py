@@ -434,7 +434,7 @@ async def analyze_live_chat(
 
         # タイムスタンプとの差の最小間隔
         xticks_interval_threshold = pd.Timedelta(
-            seconds=max(1, int(timestamp_period_total_sec * 0.02))
+            seconds=max(1, int(timestamp_period_total_sec * 0.025))
         )
         # 上位10%のうち1つ前のタイムスタンプとの差
         time_diff = top_timestamp_df.index.to_series().diff()
