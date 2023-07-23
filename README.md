@@ -42,12 +42,13 @@ https://github.com/tschoonj/GTK-for-Windows-Runtime-Environment-Installer/releas
 git clone https://github.com/shiguruikai/youtube-live-chat-analysis
 cd youtube-live-chat-analysis
 python -m venv venv
-./venv/Scripts/activate
+venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
 ※`webui.bat`を実行すると、仮想環境(`venv`)の作成とpip installを自動で行うことができます。
 
+※Linuxで仮想環境を有効化するには`source ./venv/bin/activate`を実行します。
 
 ## アップデート
 
@@ -56,8 +57,9 @@ cd youtube-live-chat-analysis
 git pull
 ```
 
-`requirements.txt`に更新があった場合、以下のコマンドを実行する。
+`requirements.txt`に更新があった場合、以下のコマンドを実行してください。
 ```
+venv\Scripts\activate
 pip install -U -r requirements.txt
 ```
 
@@ -67,7 +69,7 @@ pip install -U -r requirements.txt
 
 ```shell
 cd youtube-live-chat-analysis
-./venv/Scripts/activate
+venv\Scripts\activate
 ```
 
 ```
@@ -115,7 +117,7 @@ options:
 
 ```shell
 cd youtube-live-chat-analysis
-./venv/Scripts/activate
+venv\Scripts\activate
 ```
 
 ```
