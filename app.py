@@ -12,6 +12,14 @@ import youtube_live_chat_analysis as ya
 
 PAGE_TITLE = "YouTube Live Chat Analytics"
 
+STYLE = """
+<style>
+.main .block-container {
+    max-width: 50rem;
+}
+</style>
+"""
+
 
 def to_hms_str(seconds: float) -> str:
     return str(datetime.timedelta(seconds=int(seconds))).zfill(8)
@@ -27,16 +35,7 @@ async def main():
         },
     )
 
-    st.write(
-        """
-    <style>
-        .main .block-container {
-            max-width: 50rem;
-        }
-    </style>
-    """,
-        unsafe_allow_html=True,
-    )
+    st.write(STYLE, unsafe_allow_html=True)
 
     root_container = st.container()
 
@@ -122,19 +121,23 @@ async def main():
 
                 md = """
 ##### チャットの速さ上位10%
-||経過時間|URL|
+||タイムスタンプ|多く使用されている絵文字|
 |--:|:--:|:--|
 """
-                n = 0
-                for s in (
-                    int(ns / 1e9)
-                    for ns in analyze_result["hot_timestamp"].astype(np.int64)
-                ):
-                    n += 1
+                for i, analyzed in enumerate(analyze_result["analyzed_list"], 1):
+                    s = int(analyzed["timestamp"].value / 1e9)
                     hms = to_hms_str(s)
-                    link = f"{analyze_result['url']}&t={s}s"
-                    md += f"|{n}|{hms}|{link}|\n"
-                st.markdown(md)
+                    link = f"[{hms}]({analyze_result['url']}&t={s}s)"
+                    emoji_links = "&nbsp;&nbsp;".join(
+                        f'<img src="{analyze_result["emoji_text_to_url"][emoji_text]}" width="28">'
+                        for emoji_text, emoji_count in analyzed["emoji_list"][
+                            :max_emoji_plot
+                        ]
+                        if emoji_count >= min_emoji_count
+                    )
+                    md += f"|{i}|**{link}**|{emoji_links}|\n"
+
+                st.markdown(md, unsafe_allow_html=True)
 
             if submitted:
                 await on_click_submit_button()
