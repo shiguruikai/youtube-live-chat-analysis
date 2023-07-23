@@ -31,7 +31,7 @@ async def main():
         """
     <style>
         .main .block-container {
-            max-width: 54rem;
+            max-width: 50rem;
         }
     </style>
     """,
