@@ -21,7 +21,6 @@ import pandas as pd
 import yt_dlp
 from matplotlib.axes import Axes
 from matplotlib.offsetbox import AnnotationBbox, OffsetImage
-from pandas import DataFrame, DatetimeIndex
 from PIL import Image
 
 
@@ -274,6 +273,12 @@ def setup_matplotlib(font_size: int):
     plt.rcParams["font.family"] = "sans-serif"
 
 
+def ema(df: pd.DataFrame, span: int):
+    """指数平滑移動平均（初期値は単純移動平均と同じ）"""
+    init_value = df.iloc[:span].rolling(span).mean()
+    return pd.concat([init_value, df.iloc[span:]]).ewm(span=span, adjust=False)
+
+
 _GRID_PARAMS = {
     "which": "major",
     "axis": "both",
@@ -290,7 +295,7 @@ class AnalyzeResult(TypedDict):
     url: str
     video_id: str
     video_title: str
-    hot_timestamp: DatetimeIndex
+    hot_timestamp: pd.DatetimeIndex
 
 
 async def analyze_live_chat(
@@ -314,6 +319,9 @@ async def analyze_live_chat(
         url_or_video_id, refetch=refetch, verbose=verbose
     )
 
+    # 配信開始前のチャットを除外する。
+    chat_items = [it for it in chat_items if it["offset_time_msec"] > 0]
+
     emoji_text_to_url: dict[str, str] = reduce(
         lambda acc, it: {**acc, **it},
         (it["emoji_text_to_url"] for it in chat_items),
@@ -336,19 +344,20 @@ async def analyze_live_chat(
         if need_title:
             fig.suptitle(f"{video_info['title']} [{video_info['id']}]", wrap=True)
 
-        timestamp_df = DataFrame(chat_items, columns=["offset_time_msec"])
-        timestamp_df.rename(columns={"offset_time_msec": "timestamp"}, inplace=True)
+        timestamp_df = pd.DataFrame(chat_items, columns=["offset_time_msec"])
         timestamp_df = timestamp_df.apply(lambda it: pd.to_datetime(it, unit="ms"))
+        timestamp_df.rename(columns={"offset_time_msec": "timestamp"}, inplace=True)
+        timestamp_df.set_index("timestamp", inplace=True)
+        timestamp_df.sort_index(ascending=True, inplace=True)
 
-        timestamp_period: pd.Timedelta = (
-            timestamp_df["timestamp"].iloc[-1] - timestamp_df["timestamp"].iloc[0]
-        )
+        timestamp_period: pd.Timedelta = timestamp_df.index[-1] - timestamp_df.index[0]
 
         timestamp_period_total_sec = timestamp_period.total_seconds()
 
         ################################################################################
         # (1) チャットの数
         ################################################################################
+
         ax = fig.add_subplot(7, 1, (1, 2))
         ax.grid(**_GRID_PARAMS)
         ax.set_xlabel("経過時間")
@@ -357,7 +366,7 @@ async def analyze_live_chat(
         ax.xaxis.set_major_formatter(mdates.DateFormatter("%H:%M"))
 
         # ヒストグラムの棒の数は、とりあえず平方根にしておく。
-        ax.hist(timestamp_df["timestamp"], bins=int(math.sqrt(len(timestamp_df))))
+        ax.hist(timestamp_df.index, bins=int(math.sqrt(len(timestamp_df))))
 
         if semilogy:
             set_semilogy(ax)
@@ -366,35 +375,66 @@ async def analyze_live_chat(
         # (2) チャットの速さ
         ################################################################################
 
-        chat_speed_ma_window_size = max(1, int(timestamp_period_total_sec * 0.01))
+        ma_window = max(1, int(timestamp_period_total_sec * 0.02))
 
         ax = fig.add_subplot(7, 1, (3, 4))
         ax.grid(**_GRID_PARAMS)
         ax.set_xlabel("経過時間")
         ax.set_ylabel("チャットの数／秒")
-        ax.set_title(f"チャットの速さ\n移動平均間隔…{chat_speed_ma_window_size}秒    赤線…上位10%")
+        ax.set_title("チャットの速さ")
 
         chat_speed_df = timestamp_df.copy()
 
         # 1秒毎の数をカウントし、移動平均をプロットする。
         chat_speed_df["count"] = 0
-        chat_speed_df.set_index("timestamp", inplace=True)
         chat_speed_df = chat_speed_df.resample("1s").count()
-        chat_speed_df = chat_speed_df.rolling(chat_speed_ma_window_size).mean()
-        ax.plot(chat_speed_df)
+
+        # 単純移動平均
+        # chat_speed_sam_df = chat_speed_df.rolling(ma_window).mean()
+        # ax.plot(chat_speed_sam_df, label=f"SMA({ma_window}秒)")
+
+        # 指数平滑移動平均
+        chat_speed_ema_df = ema(chat_speed_df, ma_window).mean()
+        ax.plot(chat_speed_ema_df, label=f"EMA({ma_window}秒)")
+
+        # 線形加重移動平均
+        # weights = np.linspace(1, ma_window, ma_window)
+        # sum_weights = weights.sum()
+        # chat_speed_lwma_df = chat_speed_df.rolling(ma_window).apply(
+        #     lambda x: np.sum(x * weights) / sum_weights, raw=True
+        # )
+        # ax.plot(chat_speed_lwma_df, label=f"LWMA({ma_window}秒)")
+
+        chat_speed_ma_df = chat_speed_ema_df
+
+        # 移動平均が計算できない最初の期間の値がNaNになるため、最初の期間がグラフにプロットされなくなる。
+        # なので、一番最初の非NaNの値を最初の行の値として透明でプロットしておく。
+        ax.plot(
+            chat_speed_ma_df.index[0],
+            chat_speed_ma_df.loc[chat_speed_ma_df.first_valid_index()],
+            alpha=0,
+        )
 
         # 上位10%のタイムスタンプを抽出
-        top_timestamp_df = chat_speed_df[chat_speed_df["count"].rank(pct=True) > 0.9]
+        top_timestamp_df = chat_speed_ma_df[
+            chat_speed_ma_df["count"].rank(pct=True) > 0.9
+        ]
 
-        # 上位10%の線を赤い太線で上書きする。
-        ax.plot(top_timestamp_df["count"].asfreq("1s"), color="red", linewidth=1.5)
+        # 上位10%を赤い太線で上書きする。
+        ax.plot(
+            top_timestamp_df["count"].asfreq("1s"),
+            color="red",
+            linewidth=1.5,
+            label="上位10%",
+        )
 
         ##################
         # X軸の目盛り設定
         ##################
-        # X軸の最小の目盛り間隔
+
+        # タイムスタンプとの差の最小間隔
         xticks_interval_threshold = pd.Timedelta(
-            seconds=max(1, int(timestamp_period_total_sec * 0.025))
+            seconds=max(1, int(timestamp_period_total_sec * 0.02))
         )
         # 上位10%のうち1つ前のタイムスタンプとの差
         time_diff = top_timestamp_df.index.to_series().diff()
@@ -407,6 +447,11 @@ async def analyze_live_chat(
         ax.xaxis.set_major_locator(x_major_locator)
         ax.xaxis.set_major_formatter(mdates.DateFormatter("%H:%M"))
         ax.xaxis.set_tick_params(rotation=45)
+
+        # 凡例の表示
+        ax.legend(
+            loc="upper left", bbox_to_anchor=(0, 1), ncol=1, fontsize=font_size * 0.8
+        )
 
         if semilogy:
             set_semilogy(ax)
@@ -441,7 +486,6 @@ async def analyze_live_chat(
                     emoji_df.loc[i, emoji_text] = 1
 
         # 一定時間毎に集約
-        emoji_df.set_index("timestamp", inplace=True)
         emoji_df = emoji_df.resample(f"{emoji_df_resample_sec}s").sum()
 
         fetched_emoji_list: list[FetchedEmoji | None] = await asyncio.gather(
