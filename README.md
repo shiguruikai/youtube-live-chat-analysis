@@ -34,11 +34,9 @@ https://github.com/tschoonj/GTK-for-Windows-Runtime-Environment-Installer/releas
 
 ### 2. Pythonのインストール
 
-Pythonのインストール方法は、自分で調べてください。
+お好きな方法でPythonをインストールしてください。
 
 ### 3. インストール
-
-Python仮想環境は、他のを使ってもいいです。
 
 ```shell
 git clone https://github.com/shiguruikai/youtube-live-chat-analysis
@@ -47,6 +45,8 @@ python -m venv venv
 ./venv/Scripts/activate
 pip install -r requirements.txt
 ```
+
+※`webui.bat`を実行すると、仮想環境(`venv`)の作成とpip installを自動で行うことができます。
 
 ## 使い方
 
@@ -111,7 +111,7 @@ streamlit run app.py
 
 または
 
-コマンドの代わりに`webui.bat`を実行する。（実はライブラリのインストールも自動でやれる）
+コマンドの代わりに`webui.bat`を実行する。
 
 ## License
 
