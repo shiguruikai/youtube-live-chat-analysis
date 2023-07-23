@@ -48,6 +48,19 @@ pip install -r requirements.txt
 
 ※`webui.bat`を実行すると、仮想環境(`venv`)の作成とpip installを自動で行うことができます。
 
+
+## アップデート
+
+```
+cd youtube-live-chat-analysis
+git pull
+```
+
+`requirements.txt`に更新があった場合、以下のコマンドを実行する。
+```
+pip install -U -r requirements.txt
+```
+
 ## 使い方
 
 ### コマンドラインの場合
