@@ -3,5 +3,5 @@ CairoSVG==2.7.0
 emoji==2.6.0
 matplotlib==3.7.2
 pandas==2.0.3
-streamlit==1.24.1
+streamlit==1.25.0
 yt-dlp
